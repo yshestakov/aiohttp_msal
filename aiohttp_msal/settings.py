@@ -40,5 +40,8 @@ class MSALSettings(SettingsBase):
     database: Redis = None  # type: ignore
     """Store the Redis connection when using app_init_redis_session()."""
 
+    SCOPES = ""
+    """OAuth2 scopes in addition to reserved(default?)"""
+
 
 ENV = MSALSettings()

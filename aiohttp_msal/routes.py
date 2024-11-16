@@ -1,5 +1,4 @@
 """The user blueprint."""
-
 import time
 from inspect import iscoroutinefunction
 from typing import Any, Mapping, Sequence
@@ -11,6 +10,7 @@ from aiohttp_session import get_session, new_session
 from aiohttp_msal import _LOGGER, ENV, auth_ok, msal_session
 from aiohttp_msal.msal_async import FLOW_CACHE, AsyncMSAL
 from aiohttp_msal.user_info import get_manager_info, get_user_info
+from aiohttp_msal.user_info import get_member_of
 
 ROUTES = web.RouteTableDef()
 
@@ -31,7 +31,7 @@ def get_route(request: web.Request, url: str) -> str:
 
 
 @ROUTES.get(URI_USER_LOGIN)
-@ROUTES.get(f"{URI_USER_LOGIN}/{{to:.+$}}")
+@ROUTES.get(f"{URI_USER_LOGIN}/{{to:.+$}}")  # noqa
 async def user_login(request: web.Request) -> web.Response:
     """Redirect to MS login page."""
     session = await new_session(request)
@@ -43,12 +43,13 @@ async def user_login(request: web.Request) -> web.Response:
     session[SESSION_REDIRECT] = urljoin(_to, request.match_info.get("to", ""))
 
     msredirect = get_route(request, URI_USER_AUTHORIZED.lstrip("/"))
-    redir = AsyncMSAL(session).build_auth_code_flow(redirect_uri=msredirect)
+    redir = AsyncMSAL(session).build_auth_code_flow(
+        redirect_uri=msredirect, scopes=ENV.SCOPES.split(','))
     return web.HTTPFound(redir)
 
 
 @ROUTES.post(URI_USER_AUTHORIZED)
-async def user_authorized(request: web.Request) -> web.Response:
+async def user_authorized(request: web.Request) -> web.Response:  # noqa
     """Complete the auth code flow."""
     session = await get_session(request)
 
@@ -61,9 +62,10 @@ async def user_authorized(request: web.Request) -> web.Response:
     response_cookie = 0
 
     # Ensure all expected variables were returned...
-    if not all(auth_response.get(k) for k in ["code", "session_state", "state"]):
+    exp_attr = ("code", "session_state", "state")
+    if not all(auth_response.get(k) for k in exp_attr):
         msg.append(
-            "<b>Expecting code,state,session_state in post body.</b>"
+            "<b>Expecting {exp_attr} in post body.</b>"
             f"auth_response: {auth_response}"
         )
 
@@ -85,17 +87,29 @@ async def user_authorized(request: web.Request) -> web.Response:
             await aiomsal.async_acquire_token_by_auth_code_flow(auth_response)
         except Exception as err:  # pylint: disable=broad-except
             msg.append(
-                "<b>Could not get token</b> - async_acquire_token_by_auth_code_flow"
+                "<b>Could not get token</b> - "
+                "async_acquire_token_by_auth_code_flow"
             )
             msg.append(str(err))
 
     if not msg:
-        session.pop("mail", None)
-        session.pop("name", None)
+        sd = list(session.keys())
+        _mail = session.pop("mail", None)
+        # _mail = session.get("mail", None)
+        _name = session.pop("name", None)
+        session['username'] = _mail
+        _LOGGER.debug(f'(name {_name})(mail {_mail}) - before get_user_info'
+                      f', s.keys: {sd}')
         try:
             await get_user_info(aiomsal)
-            await get_manager_info(aiomsal)
+            if 'manager' in aiomsal.session:
+                await get_manager_info(aiomsal)
+            u_mail = aiomsal.session.get('mail')
+            if not u_mail:
+                aiomsal.session['mail'] = _mail
+            await get_member_of(aiomsal)
         except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.exception(err)
             msg.append("Could not get org info from MS graph")
             msg.append(str(err))
         if session.get("mail"):
@@ -159,9 +173,9 @@ async def user_info(request: web.Request, ses: AsyncMSAL) -> web.Response:
     res: dict[str, Any] = {
         "mail": ses.mail,
         "name": ses.name,
-        "manager_mail": ses.manager_mail,
-        "manager_name": ses.manager_name,
     }
+    res["manager_mail"] = ses.manager_mail
+    res["manager_name"] = ses.manager_name
 
     for name, testf in ENV.info.items():
         if iscoroutinefunction(testf):
@@ -174,7 +188,9 @@ async def user_info(request: web.Request, ses: AsyncMSAL) -> web.Response:
         if debug:
             res["debug"] = True
             await get_user_info(ses)
-            await get_manager_info(ses)
+            if 'manager' in ses.session:
+                await get_manager_info(ses)
+            await get_member_of(ses)
     except RuntimeError as err:
         res["get_user_info()"] = str(err)
     return web.json_response(res)
@@ -203,9 +219,11 @@ async def user_logout(request: web.Request, ses: AsyncMSAL) -> web.Response:
 
 @ROUTES.get("/user/photo")
 @msal_session(auth_ok)
-async def user_photo(request: web.Request, ses: AsyncMSAL) -> web.StreamResponse:
+async def user_photo(request: web.Request,
+                     ses: AsyncMSAL) -> web.StreamResponse:
     """Photo."""
-    async with ses.get("https://graph.microsoft.com/v1.0/me/photo/$value") as res:
+    async with ses.get(
+            "https://graph.microsoft.com/v1.0/me/photo/$value") as res:
         response = web.StreamResponse(status=res.status)
         for hdr in res.headers:
             if hdr not in (
@@ -256,4 +274,4 @@ def html_wrap(msgs: Sequence[str]) -> str:
 
     <h4>Debug info</h4>
     <ul><li>{html}</li></ul>
-    """
+    """  # noqa

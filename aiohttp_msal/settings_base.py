@@ -37,11 +37,12 @@ class SettingsBase:
     _vars: dict[str, Var] = {}
     _env_prefix = ""
 
-    def load(self, environment_prefix: str = "") -> None:
+    def load(self, environment_prefix: str = "") -> None:  # noqa
         """Initialize."""
         self._env_prefix = environment_prefix
         logger = logging.getLogger(__name__)
-        attrs = [a for a in dir(self) if not a.startswith("_") and a.upper() == a]
+        attrs = [a for a in dir(self)
+                 if not a.startswith("_") and a.upper() == a]
         for name in attrs:
             curv = getattr(self, name)
             newv: Any = os.getenv(environment_prefix + name.upper())
